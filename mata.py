@@ -255,12 +255,12 @@ class PodoscopeApp(QtWidgets.QMainWindow):
         ret, frame = self.cap.read()
         if ret:
             # Define the zoom factor (1.0 = no zoom, 1.2 = 20% zoom, etc.)
-            zoom_factor = 3  # You can adjust this variable for different zoom levels
+            zoom_factor = 2 # You can adjust this variable for different zoom levels
 
             # Get the dimensions of the original frame
             height, width, _ = frame.shape
 
-            # Calculate the size of the zoomed area
+            # Calculate the size of the zoomed area (for the camera feed)
             new_width = int(width / zoom_factor)
             new_height = int(height / zoom_factor)
 
@@ -268,17 +268,45 @@ class PodoscopeApp(QtWidgets.QMainWindow):
             x_start = (width - new_width) // 2
             y_start = (height - new_height) // 2
 
-            # Crop the frame to the calculated area (centered)
+            # Crop the frame to the calculated area (centered on the middle)
             cropped_frame = frame[y_start:y_start + new_height, x_start:x_start + new_width]
 
-            # Resize the cropped frame back to the original frame size
+            # Resize the cropped frame back to the original frame size (to fit the window)
             zoomed_frame = cv2.resize(cropped_frame, (width, height))
 
-            # The rest of the logic applies for the mask, if needed
-            # Example code to load and apply mask (if required)
+            # Load the mask (grayscale) and ensure it's properly loaded
+            mask = cv2.imread('mask.jpg', cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                QtWidgets.QMessageBox.critical(self, "Mask Error", "Unable to load the mask.")
+                return
+
+            # Resize the mask to match the original frame size (not zoomed)
+            mask = cv2.resize(mask, (width, height))
+
+            # Threshold the mask to ensure it's purely black and white
+            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+            # Invert the mask to make white areas show camera feed, black areas opaque
+            inv_mask = cv2.bitwise_not(mask)
+
+            # Create a 3-channel version of the masks to apply to the color camera feed
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)          # Original mask (for black regions)
+            inv_mask_rgb = cv2.cvtColor(inv_mask, cv2.COLOR_GRAY2BGR)  # Inverted mask (for white regions)
+
+            # Create a completely black background (same size as the frame)
+            black_background = np.zeros_like(zoomed_frame)
+
+            # Apply the mask: show camera feed where the mask is white
+            camera_feed_visible = cv2.bitwise_and(zoomed_frame, zoomed_frame, mask=mask)
+
+            # Blacken the areas where the mask is black
+            black_areas = cv2.bitwise_and(black_background, black_background, mask=inv_mask)
+
+            # Combine the black areas and the visible camera feed (white regions show the feed, black regions are black)
+            final_frame = cv2.add(camera_feed_visible, black_areas)
 
             # Convert the final frame to display in the GUI
-            image = cv2.cvtColor(zoomed_frame, cv2.COLOR_BGR2RGB)
+            image = cv2.cvtColor(final_frame, cv2.COLOR_BGR2RGB)
             height, width, channel = image.shape
             bytesPerLine = channel * width
             q_img = QtGui.QImage(image.data, width, height, bytesPerLine, QtGui.QImage.Format_RGB888)
@@ -287,8 +315,6 @@ class PodoscopeApp(QtWidgets.QMainWindow):
             # Resize the pixmap to fit the camera label size
             pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(), QtCore.Qt.KeepAspectRatio)
             self.camera_label.setPixmap(pixmap)
-
-
 
 
     def open_customer_selection(self):
