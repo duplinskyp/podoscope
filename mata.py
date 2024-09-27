@@ -233,9 +233,9 @@ class PodoscopeApp(QtWidgets.QMainWindow):
         help_menu = menubar.addMenu('Pomoc')
 
         # Customers Menu Actions
-        add_customer_action = QtWidgets.QAction('Pridať zákazníka', self)
-        add_customer_action.triggered.connect(self.add_customer_dialog)
-        customers_menu.addAction(add_customer_action)
+        # add_customer_action = QtWidgets.QAction('Pridať zákazníka', self)
+        # add_customer_action.triggered.connect(self.add_customer_dialog)
+        # customers_menu.addAction(add_customer_action)
 
         list_customers_action = QtWidgets.QAction('Zoznam zákazníkov', self)
         list_customers_action.triggered.connect(self.list_customers)
@@ -254,16 +254,50 @@ class PodoscopeApp(QtWidgets.QMainWindow):
     def update_frame(self):
         ret, frame = self.cap.read()
         if ret:
-            self.current_frame = frame
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            image = cv2.flip(image, 1)
+            # Load the mask (grayscale) and ensure it's properly loaded
+            mask = cv2.imread('mask.jpg', cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                QtWidgets.QMessageBox.critical(self, "Mask Error", "Unable to load the mask.")
+                return
+
+            # Resize the mask to match the frame size (camera feed)
+            mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+
+            # Threshold the mask to ensure it's purely black and white
+            _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+            # Invert the mask to make white areas show camera feed, black areas opaque
+            inv_mask = cv2.bitwise_not(mask)
+
+            # Create a 3-channel version of the masks to apply to the color camera feed
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)          # Original mask (for black regions)
+            inv_mask_rgb = cv2.cvtColor(inv_mask, cv2.COLOR_GRAY2BGR)  # Inverted mask (for white regions)
+
+            # Create a completely black background (same size as the frame)
+            black_background = np.zeros_like(frame)
+
+            # Apply the mask: show camera feed where the mask is white
+            # Masked frame: where the mask is white, show the camera feed
+            camera_feed_visible = cv2.bitwise_and(frame, frame, mask=mask)
+
+            # Blacken the areas where the mask is black
+            black_areas = cv2.bitwise_and(black_background, black_background, mask=inv_mask)
+
+            # Combine the black areas and the visible camera feed (white regions show the feed, black regions are black)
+            final_frame = cv2.add(camera_feed_visible, black_areas)
+
+            # Convert the final frame for display in the GUI
+            image = cv2.cvtColor(final_frame, cv2.COLOR_BGR2RGB)
             height, width, channel = image.shape
             bytesPerLine = channel * width
             q_img = QtGui.QImage(image.data, width, height, bytesPerLine, QtGui.QImage.Format_RGB888)
             pixmap = QtGui.QPixmap.fromImage(q_img)
-            # Scale pixmap to fit label size
+
+            # Resize the pixmap to fit the camera label size
             pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(), QtCore.Qt.KeepAspectRatio)
             self.camera_label.setPixmap(pixmap)
+
+
 
     def open_customer_selection(self):
         # Pause the camera
@@ -307,7 +341,7 @@ class PodoscopeApp(QtWidgets.QMainWindow):
 
         # Save image
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        image_path = os.path.join(directory, f"{timestamp}.png")
+        image_path = os.path.join(directory, f"customer+" "+{timestamp}.png")
         cv2.imwrite(image_path, self.current_frame)
 
         # Add visit to database
@@ -648,6 +682,8 @@ class ListCustomersDialog(QtWidgets.QDialog):
         self.customer_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         layout.addWidget(self.customer_table)
 
+        self.customer_table.cellDoubleClicked.connect(self.open_visits_for_customer)
+
         # Buttons
         button_layout = QtWidgets.QHBoxLayout()
         self.add_button = QtWidgets.QPushButton("Pridať")
@@ -686,6 +722,12 @@ class ListCustomersDialog(QtWidgets.QDialog):
         dialog = AddCustomerDialog(self.db_manager)
         if dialog.exec_():
             self.load_customers()
+
+    def open_visits_for_customer(self, row, column):
+        customer_id = self.db_manager.get_all_customers()[row]['id']
+        dialog = VisitsDialog(self.db_manager)
+        dialog.customer_filter_combo.setCurrentIndex(dialog.customer_filter_combo.findData(customer_id))
+        dialog.exec_()
 
     def delete_customer(self):
         selected_rows = self.customer_table.selectionModel().selectedRows()
