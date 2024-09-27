@@ -125,7 +125,7 @@ class PodoscopeApp(QtWidgets.QMainWindow):
         self.setWindowTitle("Podoscope Application")
         self.setGeometry(100, 100, 800, 600)
         self.db_manager = DatabaseManager()
-
+    
         # Apply dark theme
         self.apply_dark_theme()
 
@@ -255,7 +255,8 @@ class PodoscopeApp(QtWidgets.QMainWindow):
         ret, frame = self.cap.read()
         if ret:
             # Define the zoom factor (1.0 = no zoom, 1.2 = 20% zoom, etc.)
-            zoom_factor = 2 # You can adjust this variable for different zoom levels
+            zoom_factor = 1.2  # You can adjust this variable for different zoom levels
+            self.current_frame = frame.copy()  # Ulož aktuálny rámec
 
             # Get the dimensions of the original frame
             height, width, _ = frame.shape
@@ -311,7 +312,7 @@ class PodoscopeApp(QtWidgets.QMainWindow):
             bytesPerLine = channel * width
             q_img = QtGui.QImage(image.data, width, height, bytesPerLine, QtGui.QImage.Format_RGB888)
             pixmap = QtGui.QPixmap.fromImage(q_img)
-
+            
             # Resize the pixmap to fit the camera label size
             pixmap = pixmap.scaled(self.camera_label.width(), self.camera_label.height(), QtCore.Qt.KeepAspectRatio)
             self.camera_label.setPixmap(pixmap)
@@ -357,16 +358,45 @@ class PodoscopeApp(QtWidgets.QMainWindow):
         directory = os.path.join('Gallery', f"{customer['first_name']}_{customer['last_name']}")
         os.makedirs(directory, exist_ok=True)
 
-        # Save image
+        # Load the mask (grayscale) and ensure it's properly loaded
+        mask = cv2.imread('mask.jpg', cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            QtWidgets.QMessageBox.critical(self, "Mask Error", "Unable to load the mask.")
+            return
+
+        # Resize the mask to match the current frame size
+        mask = cv2.resize(mask, (self.current_frame.shape[1], self.current_frame.shape[0]))
+
+        # Threshold the mask to ensure it's purely black and white
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+        # Invert the mask to make white areas show camera feed, black areas opaque
+        inv_mask = cv2.bitwise_not(mask)
+
+        # Create a completely black background (same size as the frame)
+        black_background = np.zeros_like(self.current_frame)
+
+        # Apply the mask: show camera feed where the mask is white
+        camera_feed_visible = cv2.bitwise_and(self.current_frame, self.current_frame, mask=mask)
+
+        # Blacken the areas where the mask is black
+        black_areas = cv2.bitwise_and(black_background, black_background, mask=inv_mask)
+
+        # Combine the black areas and the visible camera feed
+        final_frame = cv2.add(camera_feed_visible, black_areas)
+
+        # Save image with the applied mask
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        image_path = os.path.join(directory, f"customer+" "+{timestamp}.png")
-        cv2.imwrite(image_path, self.current_frame)
+        image_path = os.path.join(directory, f"customer_{timestamp}.png")
+        
+        # Save the final image with the mask
+        cv2.imwrite(image_path, final_frame)
 
         # Add visit to database
         visit_id = self.db_manager.add_visit(customer_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), image_path, '')
 
         # Open Image Edit Dialog
-        self.image_edit_dialog = ImageEditDialog(self.current_frame, image_path, visit_id, self.db_manager)
+        self.image_edit_dialog = ImageEditDialog(final_frame, image_path, visit_id, self.db_manager)
         self.image_edit_dialog.exec_()
 
         # Resume camera
